@@ -15,10 +15,10 @@ class BrynFirstModule(ScriptedLoadableModule):
 
   def __init__(self, parent):
     ScriptedLoadableModule.__init__(self, parent)
-    self.parent.title = "BrynFirstModule" # TODO make this more human readable by adding spaces
+    self.parent.title = "Sphere Creater" # TODO make this more human readable by adding spaces
     self.parent.categories = ["Examples"]
     self.parent.dependencies = []
-    self.parent.contributors = ["John Doe (AnyWare Corp.)"] # replace with "Firstname Lastname (Organization)"
+    self.parent.contributors = ["Bryn Pitt (Vanderbilt University)", "Jimmy Ferguson (Vanderbilt University)"] # replace with "Firstname Lastname (Organization)"
     self.parent.helpText = """
 This is an example of scripted loadable module bundled in an extension.
 It performs a simple thresholding on the input volume and optionally captures a screenshot.
@@ -57,7 +57,7 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     # input volume selector
     #
     self.inputSelector = slicer.qMRMLNodeComboBox()
-    self.inputSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
+    self.inputSelector.nodeTypes = ["vtkMRMLMarkupsFiducialNode"]
     self.inputSelector.selectNodeUponCreation = True
     self.inputSelector.addEnabled = False
     self.inputSelector.removeEnabled = False
@@ -66,13 +66,14 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     self.inputSelector.showChildNodeTypes = False
     self.inputSelector.setMRMLScene( slicer.mrmlScene )
     self.inputSelector.setToolTip( "Pick the input to the algorithm." )
-    parametersFormLayout.addRow("Input Volume: ", self.inputSelector)
+    parametersFormLayout.addRow("Input Markups: ", self.inputSelector)
 
     #
     # output volume selector
     #
+
     self.outputSelector = slicer.qMRMLNodeComboBox()
-    self.outputSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
+    self.outputSelector.nodeTypes = ["vtkMRMLModelNode"]
     self.outputSelector.selectNodeUponCreation = True
     self.outputSelector.addEnabled = True
     self.outputSelector.removeEnabled = True
@@ -81,11 +82,13 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     self.outputSelector.showChildNodeTypes = False
     self.outputSelector.setMRMLScene( slicer.mrmlScene )
     self.outputSelector.setToolTip( "Pick the output to the algorithm." )
-    parametersFormLayout.addRow("Output Volume: ", self.outputSelector)
+    parametersFormLayout.addRow("Output Model: ", self.outputSelector)
+
 
     #
     # threshold value
     #
+    """
     self.imageThresholdSliderWidget = ctk.ctkSliderWidget()
     self.imageThresholdSliderWidget.singleStep = 0.1
     self.imageThresholdSliderWidget.minimum = -100
@@ -93,14 +96,17 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     self.imageThresholdSliderWidget.value = 0.5
     self.imageThresholdSliderWidget.setToolTip("Set threshold value for computing the output image. Voxels that have intensities lower than this value will set to zero.")
     parametersFormLayout.addRow("Image threshold", self.imageThresholdSliderWidget)
-
+"""
     #
     # check box to trigger taking screen shots for later use in tutorials
     #
     self.enableScreenshotsFlagCheckBox = qt.QCheckBox()
     self.enableScreenshotsFlagCheckBox.checked = 0
-    self.enableScreenshotsFlagCheckBox.setToolTip("If checked, take screen shots for tutorials. Use Save Data to write them to disk.")
-    parametersFormLayout.addRow("Enable Screenshots", self.enableScreenshotsFlagCheckBox)
+    self.enableScreenshotsFlagCheckBox.setToolTip("Enable auto-update")
+    parametersFormLayout.addRow("Auto-update", self.enableScreenshotsFlagCheckBox)
+    self.observedMarkupNode = None
+    self.markupsObserverTag = None
+    self.enableScreenshotsFlagCheckBox.connect("toggled(bool)", self.onEnableAutoUpdate)
 
     #
     # Apply Button
@@ -110,10 +116,13 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     self.applyButton.enabled = False
     parametersFormLayout.addRow(self.applyButton)
 
+    self.centerOfMassValueLabel = qt.QLabel()
+    parametersFormLayout.addRow("Center of mass", self.centerOfMassValueLabel)
+
     # connections
     self.applyButton.connect('clicked(bool)', self.onApplyButton)
     self.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
-    self.outputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    #self.outputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
 
     # Add vertical spacer
     self.layout.addStretch(1)
@@ -125,13 +134,29 @@ class BrynFirstModuleWidget(ScriptedLoadableModuleWidget):
     pass
 
   def onSelect(self):
-    self.applyButton.enabled = self.inputSelector.currentNode() and self.outputSelector.currentNode()
+    self.applyButton.enabled = self.inputSelector.currentNode()
+
+  def onEnableAutoUpdate(self, autoUpdate):
+    if self.markupsObserverTag:
+      self.observedMarkupNode.RemoveObserver(self.markupsObserverTag)
+      self.observedMarkupNode = None
+      self.markupsObserverTag = None
+    if autoUpdate and self.inputSelector.currentNode:
+      self.observedMarkupNode = self.inputSelector.currentNode()
+      self.markupsObserverTag = self.observedMarkupNode.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onMarkupsUpdated)
+
+  def onMarkupsUpdated(self, caller=None, event=None):
+    self.onApplyButton()
 
   def onApplyButton(self):
     logic = BrynFirstModuleLogic()
     enableScreenshotsFlag = self.enableScreenshotsFlagCheckBox.checked
-    imageThreshold = self.imageThresholdSliderWidget.value
-    logic.run(self.inputSelector.currentNode(), self.outputSelector.currentNode(), imageThreshold, enableScreenshotsFlag)
+   # imageThreshold = self.imageThresholdSliderWidget.value
+
+    #I hardcoded some input arguments to quickly hack the run function
+    logic.run(self.inputSelector.currentNode(), self.outputSelector.currentNode(), 0,
+              enableScreenshotsFlag)
+    #self.centerOfMassValueLabel.text = str(logic.centerOfMass)
 
 #
 # BrynFirstModuleLogic
@@ -159,6 +184,48 @@ class BrynFirstModuleLogic(ScriptedLoadableModuleLogic):
       logging.debug('hasImageData failed: no image data in volume node')
       return False
     return True
+
+  def getCenterOfMass(self, markupsNode):
+    centerOfMass=[0,0,0]
+    import numpy as np
+    sumPos = np.zeros(3)
+    for markupsIndex in range(markupsNode.GetNumberOfMarkups()):
+      pos=np.zeros(3)
+      markupsNode.GetNthFiducialPosition(markupsIndex,pos)
+      sumPos += pos
+    centerOfMass=sumPos/markupsNode.GetNumberOfMarkups()
+    logging.info('Center of mass for \'' + markupsNode.GetName() + '\': ' + repr(centerOfMass))
+
+    return centerOfMass
+
+  def getRadius(self, markupsNode, centerOfMass):
+    import numpy as np
+    #Initialize radius as distance between first and second markups
+    pos = np.zeros(3)
+    maximumRadius = 0
+    radius = 0
+    for markupsIndex in range(markupsNode.GetNumberOfMarkups()):
+      markupsNode.GetNthFiducialPosition(markupsIndex, pos)
+      currentRadius = np.linalg.norm(pos - centerOfMass)
+      if currentRadius < maximumRadius:
+         break
+      maximumRadius = currentRadius
+      radius = np.maximum(radius, maximumRadius)
+    return radius
+
+  def drawSphere(self, outputModel, centerOfMass, radius=10):
+    outputModel.CreateDefaultDisplayNodes()
+    sphere=vtk.vtkSphereSource()
+    sphere.SetCenter(centerOfMass[0], centerOfMass[1], centerOfMass[2])
+    sphere.SetRadius(radius)
+    sphere.SetPhiResolution(50)
+    sphere.SetThetaResolution(50)
+    sphere.Update()
+    outputModel.CreateDefaultDisplayNodes()
+    outputModel.GetDisplayNode().SetColor(0,0.8,0)
+    outputModel.GetDisplayNode().SetOpacity(0.3)
+    outputModel.SetAndObservePolyData(sphere.GetOutput())
+
 
   def isValidInputOutputData(self, inputVolumeNode, outputVolumeNode):
     """Validates if the output is not the same as input
@@ -210,11 +277,11 @@ class BrynFirstModuleLogic(ScriptedLoadableModuleLogic):
     annotationLogic = slicer.modules.annotations.logic()
     annotationLogic.CreateSnapShot(name, description, type, 1, imageData)
 
-  def run(self, inputVolume, outputVolume, imageThreshold, enableScreenshots=0):
+ # def run(self, inputVolume, outputVolume, imageThreshold, enableScreenshots=0):
     """
     Run the actual algorithm
     """
-
+    """
     if not self.isValidInputOutputData(inputVolume, outputVolume):
       slicer.util.errorDisplay('Input volume is the same as output volume. Choose a different output volume.')
       return False
@@ -230,6 +297,18 @@ class BrynFirstModuleLogic(ScriptedLoadableModuleLogic):
       self.takeScreenshot('BrynFirstModuleTest-Start','MyScreenshot',-1)
 
     logging.info('Processing completed')
+
+    return True
+    """
+
+  def run(self, inputMarkups, outputModel=None, imageThreshold=0, enableScreenshots=0):
+    """
+    Run the actual algorithm
+    """
+    centerOfMass = self.getCenterOfMass(inputMarkups)
+    radius = self.getRadius(inputMarkups, centerOfMass)
+
+    self.drawSphere(outputModel, centerOfMass, radius)
 
     return True
 
